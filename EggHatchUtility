@@ -1,0 +1,238 @@
+--!strict
+
+--Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+--Folders
+local Libraries = ReplicatedStorage:WaitForChild("Libraries")
+local Modules = Libraries:WaitForChild("Modules")
+local Services = ServerScriptService:WaitForChild("Services")
+local ProgressionService = Services:WaitForChild("ProgressionService") --i call this to update funnel progress analytics and such
+
+--Modules
+local DataService = require(Services:WaitForChild("DataService")) --dataService module
+local EggCatalog = require(Modules:WaitForChild("EggCatalog")) --module of egg costs rarities and names
+local PlotSettings = require(Modules:WaitForChild("PlotSettings")) --plot cframe settings
+local GoodSignal = require(Modules:WaitForChild("GoodSignal")) --goodsignal module for server side events
+local Janitor = require(Modules:WaitForChild("Janitor")) --janitor module used to clean up connections threads and objects
+local BridgeNet2 = require(Modules:WaitForChild("BridgeNet2")) --bridgenet2 for server to client communication
+
+local TutorialService = require(ProgressionService:WaitForChild("TutorialService")) --i use this module to advance tutorial steps in the gui
+
+--Settings
+local SETTINGS = { --just the default settings for the script
+	DespawnDelaySeconds = 120, --the time it takes for the placeholder egg to despawn after the timer ends
+	TickIntervalSeconds = 1, --how often the egg timer loop updates
+
+	ThresholdsSeconds = { --how long until each rarity becomes available
+		Legendary = 10 * 60, --10mins
+		Mythical = 20 * 60, --20mins
+		Divine = 30 * 60, --30mins
+	},
+
+	PricesByRarity = { --price for each egg rarity
+		Legendary = 32000, --legend egg
+		Mythical = 110000, --mythic egg
+		Divine = 260000, --divine egg
+	},
+
+	RarityOrder = { "Legendary", "Mythical", "Divine" }, --order used for progression logic
+
+	Tutorial = { --defines which tutorial step to advance to
+		BuyEggAction = "BuyEgg", --step name used by the tutorial service
+	},
+
+	Prompt = { --proxprompt settings for buying eggs
+		Name = "EggPricePrompt", --instance name for the prompt
+		RequiresLineOfSight = false, --allows activation without line of sight
+		MaxActivationDistance = 12, --distance required to see the prompt
+		HoldDuration = 0, --how long the player must hold to activate
+		Style = Enum.ProximityPromptStyle.Custom, --custom style so ui can be controlled
+		ObjectText = "", --optional object text
+		ActionText = "Buy Egg", --action text shown to the player
+	},
+
+	Names = { --common instance names shared across the service
+		Plots = "Plots",
+		MidAttachment = "MidAttachment",
+	},
+}
+
+type EggState = { -- type definitions for egg states
+	accum: { [string]: number }, 
+	queue: { string },
+	activeEgg: Instance?,
+	activeEggRarity: string?,
+	janitor: any,
+}
+
+local Utility = {}
+
+local EggTimerService = {}
+EggTimerService.__index = EggTimerService
+
+--it finds the players plot by checking an attribute instead of tracking state manually
+function Utility.findPlayerPlot(player: Player): Instance?
+	local plots = workspace:FindFirstChild(SETTINGS.Names.Plots) 
+	
+	--first check for the plots folder
+	
+	if not plots then
+		return nil
+	end
+
+	for _, plot in plots:GetChildren() do
+		if plot:GetAttribute("OwnerUserId") == player.UserId then
+			--then check if the plot is owned by the player
+			return plot
+		end
+	end
+
+	return nil
+end
+
+--basically this sets up all long lived objects owned by the service
+function EggTimerService.new()
+	local self = setmetatable({}, EggTimerService)
+
+	self.janitor = Janitor.new()
+	self.playerStates = {} :: { [Player]: EggState }
+
+	--we use these to communicate with other server scripts
+	self.Signals = {
+		EggReady = GoodSignal.new(),
+		EggBought = GoodSignal.new(),
+		EggSpawned = GoodSignal.new(),
+	}
+
+	--mirror important signals to the client
+	self.Bridges = {
+		EggReady = BridgeNet2.ServerBridge("EggReady"),
+		EggBought = BridgeNet2.ServerBridge("EggBought"),
+		EggSpawned = BridgeNet2.ServerBridge("EggSpawned"),
+		RequestBuyEgg = BridgeNet2.ServerBridge("RequestBuyEgg"),
+	}
+
+	--makes sure everything created here is cleaned up when the service shuts down
+	for _, signal in self.Signals do
+		self.janitor:Add(signal, "Destroy")
+	end
+
+	for _, bridge in self.Bridges do
+		self.janitor:Add(bridge, "Destroy")
+	end
+	
+	return self
+end
+
+--basically what this does is create a self contained state object per player
+function EggTimerService:_createPlayerState(player: Player): EggState
+	local stateJanitor = Janitor.new()
+
+	local state: EggState = {
+		accum = {},
+		queue = {},
+		activeEgg = nil,
+		activeEggRarity = nil,
+		janitor = stateJanitor,
+	}
+
+	--when this janitor is destroyed the player state is automatically removed
+	stateJanitor:Add(function()
+		self.playerStates[player] = nil
+	end)
+
+	return state
+end
+
+--this is called when a player joins and starts their egg timer loop
+function EggTimerService:StartForPlayer(player: Player)
+	if self.playerStates[player] then
+		return
+	end
+
+	local state = self:createPlayerState(player)
+	self.playerStates[player] = state
+
+	--this loop represents the per player egg timer
+	local thread = task.spawn(function()
+		while true do
+			task.wait(SETTINGS.TickIntervalSeconds)
+		end
+	end)
+
+	--destroying the player janitor will also stop this loop
+	state.janitor:Add(function()
+		task.cancel(thread)
+	end)
+end
+
+--this is called when the player leaves and cleans up everything tied to them
+function EggTimerService:StopForPlayer(player: Player)
+	local state = self.playerStates[player]
+	if not state then
+		return
+	end
+
+	state.janitor:Destroy()
+end
+
+--when the egg is ready to hatch this notifies both server listeners and the client
+function EggTimerService:MarkEggReady(player: Player, rarity: string, totalSeconds: number)
+	local payload = {
+		rarity = rarity,
+		totalSeconds = totalSeconds,
+	}
+
+	--signals are used by other server systems
+	self.Signals.EggReady:Fire(player, payload)
+	--bridges are used to update client ui
+	self.Bridges.EggReady:Fire(player, payload)
+end
+
+--this handles the logic for purchasing an egg from the server
+function EggTimerService:BuyEgg(player: Player, rarity: string)
+	local price = SETTINGS.PricesByRarity[rarity]
+	
+	if not price then
+		return
+	end
+
+	local payload = { --this payload is reused for both server and client listeners
+		rarity = rarity,
+		price = price,
+	}
+
+	--these signals can later be used for analytics or ui updates
+	self.Signals.EggBought:Fire(player, payload)
+	self.Bridges.EggBought:Fire(player, payload)
+
+	--progress through the tutorial after a successful purchase
+	TutorialService:Update(player, SETTINGS.Tutorial.BuyEggAction)
+end
+
+--init basically just connects playeradded and playerremoving once
+function EggTimerService:Init()
+	--what this does is create state and start the timer when a player joins
+	self.janitor:Add(
+		Players.PlayerAdded:Connect(function(player)
+			self:StartForPlayer(player)
+		end),
+		"Disconnect"
+	)
+
+	--and this cleans up the state when the player leaves
+	self.janitor:Add(
+		Players.PlayerRemoving:Connect(function(player)
+			self:StopForPlayer(player)
+		end),"Disconnect")
+end
+
+--this cleans up all players signals bridges and connections owned by the service
+function EggTimerService:Destroy()
+	self.janitor:Destroy()
+end
+
+return EggTimerService
