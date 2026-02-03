@@ -7,7 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage") --shared storage 
 local ServerScriptService = game:GetService("ServerScriptService") --server-only scripts and services
 
 --Folders
-local Libraries = ReplicatedStorage:WaitForChild("Libraries") -libraries where i keep my assets and modules
+local Libraries = ReplicatedStorage:WaitForChild("Libraries") --libraries where i keep my assets and modules
 local Modules = Libraries:WaitForChild("Modules") --where reusable modules live
 local Services = ServerScriptService:WaitForChild("Services") --my services folder
 local ProgressionService = Services:WaitForChild("ProgressionService") --i call this to update funnel progress analytics and such
