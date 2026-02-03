@@ -39,7 +39,6 @@ local SETTINGS = { --just the default settings for the script
 		Legendary = 32000, --legend egg
 		Mythical = 110000, --mythic egg
 		Divine = 260000, --divine egg
-		--server is the authority on prices
 	},
 
 	RarityOrder = { "Legendary", "Mythical", "Divine" }, --order used for rarities
