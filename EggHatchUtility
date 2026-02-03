@@ -1,14 +1,11 @@
 --!strict
---strict mode is enabled so luau type checking can catch bugs early
 
 --Services
---these are roblox core services pulled once at the top for reuse
 local Players = game:GetService("Players") --used to detect players joining and leaving
 local ReplicatedStorage = game:GetService("ReplicatedStorage") --shared storage for modules
 local ServerScriptService = game:GetService("ServerScriptService") --server-only scripts and services
 
 --Folders
---these waits ensure the hierarchy is fully loaded before the script continues
 local Libraries = ReplicatedStorage:WaitForChild("Libraries") --top-level shared library folder
 local Modules = Libraries:WaitForChild("Modules") --where reusable modules live
 local Services = ServerScriptService:WaitForChild("Services") --server service folder
