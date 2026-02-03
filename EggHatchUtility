@@ -26,8 +26,7 @@ local SETTINGS = { --just the default settings for the script
 	DespawnDelaySeconds = 120, --the time it takes for the placeholder egg to despawn after the timer ends
 	--this is used after an egg finishes timing but isn't bought
 
-	TickIntervalSeconds = 1, --how often the egg timer loop updates
-	--lower values = more accurate timers, higher values = cheaper performance
+	TickIntervalSeconds = 1, --how often the egg timer loop updates in seconds
 
 	ThresholdsSeconds = { --how long until each rarity becomes available
 		Legendary = 10 * 60, --10mins
